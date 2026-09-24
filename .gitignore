@@ -5,3 +5,9 @@ proxy-secret
 build
 .idea
 config
+tproxy.json
+profiles.json
+token.key
+Caddyfile
+log/
+caddy/

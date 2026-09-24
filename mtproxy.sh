@@ -1,6 +1,13 @@
 #!/bin/bash
 WORKDIR=$(dirname $(readlink -f $0))
 cd $WORKDIR
+if [[ -f "$WORKDIR/web.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$WORKDIR/web.sh"
+fi
+if ! declare -F is_web_mode >/dev/null; then
+    is_web_mode() { return 1; }
+fi
 SYSTEM_ARCH=$(uname -m)
 SYSTEM_PYTHON=$(which python3 || which python)
 
@@ -263,8 +270,13 @@ function is_port_open() {
 
 function is_running_mtp() {
     if [ -f $PID_FILE ]; then
-
-        if is_pid_exists $(cat $PID_FILE); then
+        local recorded
+        recorded=$(cat "$PID_FILE")
+        # daemon 启动时，父进程会先把自己的 pid 写入。这不是另一份正在运行的服务。
+        if [[ "$recorded" == "$$" ]]; then
+            return 1
+        fi
+        if is_pid_exists "$recorded"; then
             return 0
         fi
     fi
@@ -322,6 +334,9 @@ do_install() {
     mtg_provider=$(get_mtg_provider)
 
     do_install_proxy $mtg_provider
+    if is_web_mode; then
+        do_install_web_bins 1
+    fi
 
     if [ ! -d "./pid" ]; then
         mkdir "./pid"
@@ -356,6 +371,9 @@ do_kill_process() {
     cd $WORKDIR
     if [ ! -f "$CONFIG_PATH" ]; then
         print_error_exit "配置文件不存在,请重新安装"
+    fi
+    if is_web_mode; then
+        return 0
     fi
     source $CONFIG_PATH
 
@@ -476,6 +494,22 @@ do_install_build_dep() {
 
 do_config_mtp() {
     cd $WORKDIR
+
+    while true; do
+        print_subject "请选择代理模式"
+        echo -e "  \033[36m1.\033[0m Fake TLS"
+        echo -e "  \033[36m2.\033[0m WEB 代理"
+        read -r -p "(默认模式: 1):" input_proxy_mode
+        [[ -z "$input_proxy_mode" ]] && input_proxy_mode=1
+        if [[ "$input_proxy_mode" == "1" ]]; then
+            break
+        elif [[ "$input_proxy_mode" == "2" ]]; then
+            [[ -f "$WORKDIR/web.sh" ]] || print_error_exit "缺少 web.sh，WEB 模式需要完整项目目录"
+            do_config_web
+            return
+        fi
+        print_warning "请输入 1 或 2"
+    done
 
     while true; do
         default_provider=1
@@ -600,6 +634,7 @@ do_config_mtp() {
 
     cat >$CONFIG_PATH <<EOF
 #!/bin/bash
+proxy_mode="tls"
 secret="${secret}"
 port=${input_port}
 statport=${input_manage_port}
@@ -622,6 +657,10 @@ function gen_rand_hex() {
 }
 
 info_mtp() {
+    if is_web_mode; then
+        info_web "$@"
+        return
+    fi
     if [[ "$1" == "ingore" ]] || is_running_mtp; then
         source $CONFIG_PATH
 
@@ -691,6 +730,15 @@ run_mtp() {
     else
         do_kill_process
         do_check_system_datetime_and_update
+        if is_web_mode; then
+            mkdir -p "$LOG_DIR"
+            bash "$0" daemon >>"$LOG_DIR/supervisor.log" 2>&1 &
+            echo $! >"$PID_FILE"
+            sleep 2
+            info_mtp
+            web_report_startup
+            return
+        fi
 
         local command=$(get_run_command)
         echo $command
@@ -708,33 +756,53 @@ daemon_mtp() {
 
     if is_running_mtp; then
         print_warning "MTProxy已经运行，请勿重复运行!"
-    else
-        do_kill_process
-        do_check_system_datetime_and_update
-
-        local command=$(get_run_command)
-        echo $command
-        while true
-        do
-            {
-                sleep 2
-                info_mtp "ingore"
-            } &
-            $command >/dev/null
-            print_warning "进程检测到被关闭,正在重启中!!!"
-            sleep 2
-        done
+        return
     fi
+    do_kill_process
+    do_check_system_datetime_and_update
+    if is_web_mode; then
+        web_supervise
+        return
+    fi
+
+    local command tls_child info_pid
+    command=$(get_run_command)
+    echo "$command"
+    echo $$ >"$PID_FILE"
+    trap 'kill -TERM "$tls_child" >/dev/null 2>&1 || true; kill -TERM "$info_pid" >/dev/null 2>&1 || true; rm -f "$PID_FILE"; exit 0' INT TERM
+    while true
+    do
+        {
+            sleep 2
+            info_mtp "ingore"
+        } &
+        info_pid=$!
+        $command >/dev/null &
+        tls_child=$!
+        wait "$tls_child"
+        kill -TERM "$info_pid" >/dev/null 2>&1 || true
+        print_warning "进程检测到被关闭,正在重启中!!!"
+        sleep 2
+    done
 }
 
 debug_mtp() {
     cd $WORKDIR
+
+    if is_running_mtp; then
+        print_warning "MTProxy已经运行，请先停止后再调试!"
+        return
+    fi
 
     print_info "当前正在运行调试模式："
     print_warning "\t你随时可以通过 Ctrl+C 进行取消操作"
 
     do_kill_process
     do_check_system_datetime_and_update
+    if is_web_mode; then
+        web_supervise
+        return
+    fi
 
     local command=$(get_run_command)
     echo $command
@@ -743,11 +811,31 @@ debug_mtp() {
 }
 
 stop_mtp() {
-    local pid=$(cat $PID_FILE)
-    kill -9 $pid
-
-    if is_pid_exists $pid; then
+    if [[ ! -f $PID_FILE ]]; then
+        if declare -F web_kill_recorded_children >/dev/null; then
+            web_kill_recorded_children
+        fi
+        print_warning "没有正在运行的进程"
+        return
+    fi
+    local pid
+    pid=$(cat "$PID_FILE")
+    kill -TERM "$pid" >/dev/null 2>&1 || true
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        is_pid_exists "$pid" || break
+        sleep 1
+    done
+    if is_pid_exists "$pid"; then
+        kill -KILL "$pid" >/dev/null 2>&1 || true
+    fi
+    if declare -F web_kill_recorded_children >/dev/null; then
+        web_kill_recorded_children
+    fi
+    if is_pid_exists "$pid"; then
         print_warning "停止任务失败"
+    else
+        rm -f "$PID_FILE"
     fi
 }
 
@@ -812,6 +900,7 @@ elif [[ "build" == $param ]]; then
     # build_mtproto 2
     do_install_proxy "mtg"
     do_install_proxy "python-mtprotoproxy"
+    do_install_web_bins 1
 elif [[ "check_tg" == $param ]] || [[ "tgcheck" == $param ]] || [[ "check-tg" == $param ]]; then
     print_info "即将：检查当前服务器到 Telegram 的 TCP 连通性"
     check_tg_connectivity

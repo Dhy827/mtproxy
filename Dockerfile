@@ -14,7 +14,7 @@ RUN set -ex \
     && cp src/* /usr/share/nginx/html \
     && rm -rf .git \
     && cp entrypoint.sh /docker-entrypoint.d/40-mtproxy-start.sh \
-    && chmod +x /docker-entrypoint.d/40-mtproxy-start.sh \
+    && chmod +x /docker-entrypoint.d/40-mtproxy-start.sh /home/mtproxy/docker-start.sh \
     && cp -f nginx/default.conf /etc/nginx/conf.d/default.conf \
     && cp -f nginx/ip_white.conf /etc/nginx/ip_white.conf \
     && cp -f nginx/nginx.conf /etc/nginx/nginx.conf
@@ -37,3 +37,5 @@ RUN set -ex \
     && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 80 443
+ENTRYPOINT ["/home/mtproxy/docker-start.sh"]
+CMD ["nginx", "-g", "daemon off;"]
