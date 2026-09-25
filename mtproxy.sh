@@ -17,8 +17,9 @@ IS_DOCKER=$( [ -f /.dockerenv ] && echo "true" || echo "false" )
 PID_FILE=$RUNTIME_DIR/pid/pid_mtproxy
 CONFIG_PATH=$WORKDIR/config
 
-URL_MTG="https://github.com/ellermister/mtproxy/releases/download/v0.04/$(uname -m)-mtg"
-URL_MTPROTO="https://github.com/ellermister/mtproxy/releases/download/v0.04/mtproto-proxy"
+RELEASE_BASE="https://github.com/ellermister/mtproxy/releases/download/v0.04"
+URL_MTG="${RELEASE_BASE}/$(uname -m)-mtg"
+URL_MTPROTO="${RELEASE_BASE}/mtproto-proxy"
 URL_PY_MTPROTOPROXY="https://github.com/alexbers/mtprotoproxy/archive/refs/heads/master.zip"
 BINARY_MTG_PATH=$WORKDIR/bin/mtg
 BINARY_MTPROTO_PROXY_PATH=$WORKDIR/bin/mtproto-proxy
@@ -180,69 +181,25 @@ function get_architecture() {
     echo $architecture
 }
 
-function build_mtproto() {
-    cd $WORKDIR
+download_bin() {
+    local url=$1
+    local dest=$2
+    mkdir -p "$(dirname "$dest")"
+    wget -q "$url" -O "$dest" || print_error_exit "下载失败: $url"
+    chmod +x "$dest"
+}
 
-    local platform=$(uname -m)
-    if [[ -z "$1" ]]; then
-        print_error_exit "缺少参数"
-    fi
-
+build_official_mtproxy() {
     do_install_build_dep
-
-    rm -rf build
-    mkdir build && cd build
-
-    if [[ "1" == "$1" ]]; then
-         if [ -d 'MTProxy' ]; then
-            rm -rf 'MTProxy'
-        fi
-
-        git clone https://github.com/ellermister/MTProxyC --depth=1 MTProxy
-        cd MTProxy && make && cd objs/bin &&  chmod +x mtproto-proxy
-
-        if [ ! -f "./mtproto-proxy" ]; then
-            print_error_exit "mtproto-proxy 编译失败"
-        fi
-
-        cp -f mtproto-proxy $WORKDIR
-        
-
-        # clean
-        rm -rf 'MTProxy'
-
-    elif [[ "2" == "$1" ]]; then
-        # golang
-        local arch=$(get_architecture)
-
-        #  https://go.dev/dl/go1.18.4.linux-amd64.tar.gz
-        local golang_url="https://go.dev/dl/go1.18.4.linux-$arch.tar.gz"
-        wget $golang_url -O golang.tar.gz
-        rm -rf go && tar -C . -xzf golang.tar.gz
-        export PATH=$PATH:$(pwd)/go/bin
-
-        go version
-        if [[ $? != 0 ]]; then
-            local uname_m=$(uname -m)
-            local architecture_origin=$(dpkg --print-architecture)
-            print_error_exit "golang download failed, please check!!! arch: $arch, platform: $platform,  uname: $uname_m, architecture_origin: $architecture_origin download url: $golang_url"
-        fi
-
-        rm -rf build-mtg
-        git clone https://github.com/9seconds/mtg.git -b v1 build-mtg
-        cd build-mtg && git reset --hard 9d67414db633dded5f11d549eb80617dc6abb2c3  && make static
-
-        if [[ ! -f "./mtg" ]]; then
-            print_error_exit "Build fail for mtg, please check!!! $arch"
-        fi
-
-        cp -f mtg $WORKDIR && chmod +x $WORKDIR/mtg
-    fi
-
-    # clean
-    cd $WORKDIR
-    rm -rf build
-
+    local src=$WORKDIR/build/MTProxyC
+    rm -rf "$src"
+    mkdir -p "$WORKDIR/build" "$WORKDIR/bin"
+    git clone --depth 1 https://github.com/ellermister/MTProxyC "$src" || print_error_exit "克隆 MTProxyC 失败"
+    (cd "$src" && make) || print_error_exit "编译 mtproto-proxy 失败"
+    [[ -x "$src/objs/bin/mtproto-proxy" ]] || print_error_exit "编译 mtproto-proxy 失败"
+    cp -f "$src/objs/bin/mtproto-proxy" "$BINARY_MTPROTO_PROXY_PATH"
+    chmod +x "$BINARY_MTPROTO_PROXY_PATH"
+    rm -rf "$src"
 }
 
 function get_mtg_provider() {
@@ -319,54 +276,54 @@ function is_pid_exists() {
     fi
 }
 
-do_install_proxy() {
-    local mtg_provider=$1
+do_install() {
+    cd "$WORKDIR"
+    mkdir -p "$WORKDIR/bin"
+    local arch
+    arch=$(get_architecture)
+    case "$arch" in
+        amd64|arm64) ;;
+        *) print_error_exit "没有 ${arch} 的发布文件" ;;
+    esac
 
-    if [ ! -d "$WORKDIR/bin" ]; then
-        mkdir -p $WORKDIR/bin
+    download_bin "$URL_MTG" "$BINARY_MTG_PATH"
+    "$BINARY_MTG_PATH" >/dev/null 2>&1 || print_error_exit "下载的 mtg 无法运行: $URL_MTG"
+    print_info "已下载 mtg"
+
+    if [[ "$arch" == "amd64" ]]; then
+        download_bin "$URL_MTPROTO" "$BINARY_MTPROTO_PROXY_PATH"
+        "$BINARY_MTPROTO_PROXY_PATH" >/dev/null 2>&1
+        local exit_code=$?
+        if [[ "$exit_code" -ne 0 && "$exit_code" -ne 2 ]]; then
+            print_error_exit "下载的 mtproto-proxy 无法运行: $URL_MTPROTO"
+        fi
+        print_info "已下载 mtproto-proxy"
     fi
 
-    if [[ "$mtg_provider" == "mtg" ]]; then
-        wget $URL_MTG -O $BINARY_MTG_PATH -q
-        chmod +x $BINARY_MTG_PATH
-        $BINARY_MTG_PATH
-        exit_code=$?
-        if [ $exit_code -ne 0 ]; then
-            print_error_exit "Install mtg failed"
-        fi
-        print_info "Installed for mtg"
-    elif [[ "$mtg_provider" == "official-MTProxy" ]]; then
-        wget $URL_MTPROTO -O $BINARY_MTPROTO_PROXY_PATH -q
-        chmod +x $BINARY_MTPROTO_PROXY_PATH
-        $BINARY_MTPROTO_PROXY_PATH
-        exit_code=$?
-        if [ $exit_code -ne 0 ] && [ $exit_code -ne 2 ]; then
-            print_error_exit "Install mtproto-proxy failed"
-        fi
-        print_info "Installed for mtproto-proxy"
-    
-    elif [[ "$mtg_provider" == "python-mtprotoproxy" ]]; then
-        wget $URL_PY_MTPROTOPROXY -O mtprotoproxy-master.zip
-        unzip mtprotoproxy-master.zip
-        cp -rf mtprotoproxy-master/*.py mtprotoproxy-master/pyaes $WORKDIR/bin/
-        rm -rf mtprotoproxy-master mtprotoproxy-master.zip
-        print_info "Installed for mtprotoproxy"
-    fi
+    mkdir -p "$WORKDIR/build"
+    wget -q "$URL_PY_MTPROTOPROXY" -O "$WORKDIR/build/mtprotoproxy.zip" || print_error_exit "下载失败: $URL_PY_MTPROTOPROXY"
+    rm -rf "$WORKDIR/build/mtprotoproxy-master"
+    unzip -q "$WORKDIR/build/mtprotoproxy.zip" -d "$WORKDIR/build" || print_error_exit "解压 mtprotoproxy 失败"
+    cp -rf "$WORKDIR/build/mtprotoproxy-master"/*.py "$WORKDIR/build/mtprotoproxy-master"/pyaes "$WORKDIR/bin/" || print_error_exit "安装 mtprotoproxy 失败"
+    rm -rf "$WORKDIR/build/mtprotoproxy-master" "$WORKDIR/build/mtprotoproxy.zip"
+    print_info "已下载 mtprotoproxy"
+
+    download_bin "${RELEASE_BASE}/tproxy-relay-linux-${arch}" "$BINARY_TPROXY_RELAY_PATH"
+    download_bin "${RELEASE_BASE}/tproxy-server-linux-${arch}" "$BINARY_TPROXY_SERVER_PATH"
+    print_info "已下载 tproxy-relay 和 tproxy-server"
+    download_caddy
 }
 
-do_install() {
-    cd $WORKDIR
-
-    mtg_provider=$(get_mtg_provider)
-
-    do_install_proxy $mtg_provider
-    if is_web_mode; then
-        do_install_web_bins 1
+do_build() {
+    cd "$WORKDIR"
+    mkdir -p "$WORKDIR/bin"
+    local arch
+    arch=$(get_architecture)
+    if [[ "$arch" == "amd64" ]]; then
+        build_official_mtproxy
+        print_info "已编译 mtproto-proxy"
     fi
-
-    if [ ! -d "./pid" ]; then
-        mkdir "./pid"
-    fi
+    build_go_bins
 }
 
 print_line() {
@@ -510,10 +467,10 @@ do_install_basic_dep() {
 do_install_build_dep() {
     print_info "Checking and installing build dependencies..."
     if check_sys packageManager yum; then
-        yum install -y git  openssl-devel zlib-devel
+        yum install -y git openssl-devel zlib-devel libzstd-devel
         yum groupinstall -y "Development Tools"
     elif check_sys packageManager apt; then
-        apt install -y git curl  build-essential libssl-dev zlib1g-dev
+        apt install -y git curl build-essential libssl-dev zlib1g-dev libzstd-dev
     fi
     return 0
 }
@@ -714,7 +671,7 @@ function get_run_command(){
       local local_ip=$(get_local_ip)
       
       # ./mtg simple-run -n 1.1.1.1 -t 30s -a 512kib 0.0.0.0:$port $client_secret >/dev/null 2>&1 &
-      [[ -f "$BINARY_MTG_PATH" ]] || (print_warning "MTProxy 代理程序不存在请重新安装!" && exit 1)
+      [[ -x "$BINARY_MTG_PATH" ]] || print_error_exit "缺少 mtg，请先执行 bash $0 install"
       echo "$BINARY_MTG_PATH run $client_secret $adtag -b 0.0.0.0:$port --multiplex-per-connection 500 --prefer-ip=ipv4 -t $local_ip:$statport" -4 "$PUBLIC_IP:$port"
   elif [[ "$mtg_provider" == "python-mtprotoproxy" ]]; then
         mkdir -p "$RUNTIME_DIR"
@@ -731,7 +688,7 @@ MODES = {
 TLS_DOMAIN = "${domain}"
 AD_TAG = "${adtag}"
 EOF
-      #optimze pool
+      [[ -f "$BINARY_PY_MTPROTOPROXY_PATH" ]] || print_error_exit "缺少 mtprotoproxy，请先执行 bash $0 install"
       sed -i 's/MAX_CONNS_IN_POOL =\s[0-9]\+/MAX_CONNS_IN_POOL = 500/' "$BINARY_PY_MTPROTOPROXY_PATH"
       
       echo "$SYSTEM_PYTHON $BINARY_PY_MTPROTOPROXY_PATH $RUNTIME_DIR/config.py"
@@ -739,6 +696,7 @@ EOF
       mkdir -p "$RUNTIME_DIR"
       curl -s https://core.telegram.org/getProxyConfig -o "$RUNTIME_DIR/proxy-multi.conf"
       curl -s https://core.telegram.org/getProxySecret -o "$RUNTIME_DIR/proxy-secret"
+      [[ -x "$BINARY_MTPROTO_PROXY_PATH" ]] || print_error_exit "缺少官方 MTProxy，请先执行 bash $0 install"
       nat_info=$(get_nat_ip_param)
       workerman=$(get_cpu_core)
       tag_arg=""
@@ -901,6 +859,14 @@ relocate_runtime_files
 if [[ "${1:-}" == "relocate" ]]; then
     exit 0
 fi
+if [[ "${1:-}" == "install" ]]; then
+    do_install
+    exit 0
+fi
+if [[ "${1:-}" == "build" ]]; then
+    do_build
+    exit 0
+fi
 
 if [ -z "$PUBLIC_IP" ] && [[ "check_tg" != "$param" ]] && [[ "tgcheck" != "$param" ]] && [[ "check-tg" != "$param" ]]; then
     PUBLIC_IP=$(get_ip_public) || print_error_exit "Failed to get public IP address. Please check your network connection."
@@ -923,17 +889,6 @@ elif [[ "restart" == $param ]]; then
     run_mtp
 elif [[ "reinstall" == $param ]]; then
     reinstall_mtp
-elif [[ "build" == $param ]]; then
-    arch=$(get_architecture)
-    if [[ "$arch" == "amd64" ]]; then
-        # build_mtproto 1
-        do_install_proxy "official-MTProxy"
-    fi
-    
-    # build_mtproto 2
-    do_install_proxy "mtg"
-    do_install_proxy "python-mtprotoproxy"
-    do_install_web_bins 1
 elif [[ "check_tg" == $param ]] || [[ "tgcheck" == $param ]] || [[ "check-tg" == $param ]]; then
     print_info "即将：检查当前服务器到 Telegram 的 TCP 连通性"
     check_tg_connectivity
@@ -962,6 +917,8 @@ else
         echo -e "\t停止服务\t bash $0 stop"
         echo -e "\t重启服务\t bash $0 restart"
         echo -e "\t重新安装代理程序 bash $0 reinstall"
+        echo -e "\t下载程序\t bash $0 install"
+        echo -e "\t编译程序\t bash $0 build"
         echo -e "\t检查TG连通性\t bash $0 check_tg"
     fi
 fi

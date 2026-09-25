@@ -361,11 +361,11 @@ web_prepare_mtp_command() {
         fi
         CMD_mtp+=(-b "$web_backend" --multiplex-per-connection 500 --prefer-ip=ipv4 -t "127.0.0.1:$statport" -4 "${PUBLIC_IP}:${SPLIT_PORT}")
     elif [[ "$provider_name" == "python-mtprotoproxy" ]]; then
-        [[ -f "$BINARY_PY_MTPROTOPROXY_PATH" ]] || print_error_exit "缺少 mtprotoproxy，请先安装"
+        [[ -f "$BINARY_PY_MTPROTOPROXY_PATH" ]] || print_error_exit "缺少 mtprotoproxy，请先执行 bash $0 install"
         web_write_python_config
         CMD_mtp=("$SYSTEM_PYTHON" "$BINARY_PY_MTPROTOPROXY_PATH" "$RUNTIME_DIR/config.py")
     elif [[ "$provider_name" == "official-MTProxy" ]]; then
-        [[ -x "$BINARY_MTPROTO_PROXY_PATH" ]] || print_error_exit "缺少官方 MTProxy，请先安装"
+        [[ -x "$BINARY_MTPROTO_PROXY_PATH" ]] || print_error_exit "缺少官方 MTProxy，请先执行 bash $0 install"
         mkdir -p "$RUNTIME_DIR"
         curl -fsSL --connect-timeout 10 --max-time 30 https://core.telegram.org/getProxyConfig -o "$RUNTIME_DIR/proxy-multi.conf" || print_error_exit "下载 proxy-multi.conf 失败"
         curl -fsSL --connect-timeout 10 --max-time 30 https://core.telegram.org/getProxySecret -o "$RUNTIME_DIR/proxy-secret" || print_error_exit "下载 proxy-secret 失败"
@@ -417,63 +417,65 @@ ensure_go() {
     export PATH="$WORKDIR/build/go/bin:$PATH"
 }
 
-do_install_web_bins() {
-    local with_caddy=${1:-1}
+download_caddy() {
+    local caddy_arch
+    caddy_arch=$(get_architecture)
+    case "$caddy_arch" in
+        amd64|arm64|386) ;;
+        armv6l) caddy_arch=armv6 ;;
+        *) print_error_exit "没有对应架构的 Caddy: $caddy_arch" ;;
+    esac
+    local tmp
+    tmp=$(mktemp -d)
+    print_info "下载 Caddy ${CADDY_VERSION}"
+    wget -q "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz" -O "$tmp/caddy.tgz" || print_error_exit "下载 Caddy 失败"
+    tar -C "$tmp" -xzf "$tmp/caddy.tgz"
+    mkdir -p "$WORKDIR/bin"
+    mv "$tmp/caddy" "$BINARY_CADDY_PATH"
+    chmod +x "$BINARY_CADDY_PATH"
+    rm -rf "$tmp"
+    print_info "已下载 caddy"
+}
+
+build_go_bins() {
     mkdir -p "$WORKDIR/bin"
     ensure_go
-    if [[ ! -x "$BINARY_TPROXY_RELAY_PATH" || "$WORKDIR/relay/main.go" -nt "$BINARY_TPROXY_RELAY_PATH" ]]; then
-        [[ -f "$WORKDIR/relay/main.go" ]] || print_error_exit "缺少 relay 源码，WEB 模式需要完整项目目录"
-        print_info "编译 tproxy-relay"
-        (cd "$WORKDIR/relay" && go build -trimpath -o "$BINARY_TPROXY_RELAY_PATH" .) || print_error_exit "编译 tproxy-relay 失败"
-        chmod +x "$BINARY_TPROXY_RELAY_PATH"
+    [[ -f "$WORKDIR/relay/main.go" ]] || print_error_exit "缺少 relay 源码"
+    print_info "编译 tproxy-relay"
+    (cd "$WORKDIR/relay" && CGO_ENABLED=0 go build -trimpath -o "$BINARY_TPROXY_RELAY_PATH" .) || print_error_exit "编译 tproxy-relay 失败"
+    chmod +x "$BINARY_TPROXY_RELAY_PATH"
+
+    local src=""
+    if [[ -f "$WORKDIR/../tproxy-server/go.mod" ]]; then
+        src=$(readlink -f "$WORKDIR/../tproxy-server")
+    else
+        src=$WORKDIR/build/tproxy-server
+        rm -rf "$src"
+        print_info "获取 tproxy-server 源码"
+        git clone --depth 1 https://github.com/telegramdesktop/tproxy-server.git "$src" || print_error_exit "克隆 tproxy-server 失败"
     fi
-    if [[ ! -x "$BINARY_TPROXY_SERVER_PATH" ]]; then
-        local src=""
-        if [[ -f "$WORKDIR/../tproxy-server/go.mod" ]]; then
-            src=$(readlink -f "$WORKDIR/../tproxy-server")
-        else
-            src=$WORKDIR/build/tproxy-server
-            rm -rf "$src"
-            print_info "获取 tproxy-server 源码"
-            git clone --depth 1 https://github.com/telegramdesktop/tproxy-server.git "$src" || print_error_exit "克隆 tproxy-server 失败"
-        fi
-        print_info "编译 tproxy-server"
-        (cd "$src" && go build -trimpath -o "$BINARY_TPROXY_SERVER_PATH" ./cmd/tproxy-server) || print_error_exit "编译 tproxy-server 失败"
-        chmod +x "$BINARY_TPROXY_SERVER_PATH"
-        rm -rf "$WORKDIR/build/tproxy-server"
-    fi
-    if [[ "$with_caddy" == "1" && ! -x "$BINARY_CADDY_PATH" ]]; then
-        local caddy_arch
-        caddy_arch=$(get_architecture)
-        case "$caddy_arch" in
-            amd64|arm64|386) ;;
-            armv6l) caddy_arch=armv6 ;;
-            *) print_error_exit "没有对应架构的 Caddy: $caddy_arch" ;;
-        esac
-        local tmp
-        tmp=$(mktemp -d)
-        print_info "下载 Caddy ${CADDY_VERSION}"
-        wget -q "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz" -O "$tmp/caddy.tgz" || print_error_exit "下载 Caddy 失败"
-        tar -C "$tmp" -xzf "$tmp/caddy.tgz"
-        mv "$tmp/caddy" "$BINARY_CADDY_PATH"
-        chmod +x "$BINARY_CADDY_PATH"
-        rm -rf "$tmp"
-    fi
-    if [[ -f "$WORKDIR/front/main.go" ]]; then
-        if [[ ! -x "$WORKDIR/bin/front" ]] || [[ -n $(find "$WORKDIR/front" -name '*.go' -newer "$WORKDIR/bin/front" -print -quit 2>/dev/null) ]]; then
-            print_info "编译 front"
-            (cd "$WORKDIR/front" && CGO_ENABLED=0 go build -trimpath -o "$WORKDIR/bin/front" .) || print_error_exit "编译 front 失败"
-            chmod +x "$WORKDIR/bin/front"
-        fi
-    fi
+    print_info "编译 tproxy-server"
+    (cd "$src" && CGO_ENABLED=0 go build -trimpath -o "$BINARY_TPROXY_SERVER_PATH" ./cmd/tproxy-server) || print_error_exit "编译 tproxy-server 失败"
+    chmod +x "$BINARY_TPROXY_SERVER_PATH"
+    rm -rf "$WORKDIR/build/tproxy-server"
+
+    [[ -f "$WORKDIR/front/main.go" ]] || print_error_exit "缺少 front 源码"
+    print_info "编译 front"
+    (cd "$WORKDIR/front" && CGO_ENABLED=0 go build -trimpath -o "$WORKDIR/bin/front" .) || print_error_exit "编译 front 失败"
+    chmod +x "$WORKDIR/bin/front"
     rm -rf "$WORKDIR/build/go" "$WORKDIR/build/go.tgz"
+    print_info "已编译 tproxy-relay、tproxy-server 和 front"
 }
 
 web_require_bins() {
-    local with_caddy=0
-    [[ "$web_front" == "caddy" ]] && with_caddy=1
-    if [[ ! -x "$BINARY_TPROXY_SERVER_PATH" || ! -x "$BINARY_TPROXY_RELAY_PATH" || ( "$with_caddy" == 1 && ! -x "$BINARY_CADDY_PATH" ) ]]; then
-        do_install_web_bins "$with_caddy"
+    local missing=()
+    [[ -x "$BINARY_TPROXY_SERVER_PATH" ]] || missing+=("tproxy-server")
+    [[ -x "$BINARY_TPROXY_RELAY_PATH" ]] || missing+=("tproxy-relay")
+    if [[ "$web_front" == "caddy" && ! -x "$BINARY_CADDY_PATH" ]]; then
+        missing+=("caddy")
+    fi
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        print_error_exit "缺少 ${missing[*]}，请先执行 bash $0 install"
     fi
 }
 
