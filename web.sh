@@ -93,17 +93,18 @@ web_hostport_is_loopback() {
     is_loopback_host "$SPLIT_HOST"
 }
 
+web_fallback_dir() {
+    local path=${web_fallback%/}
+    if [[ "$path" != /* ]]; then
+        path="$WORKDIR/$path"
+    fi
+    printf '%s' "$path"
+}
+
 web_classify_fallback() {
     WEB_HTTP_RELAY=0
     WEB_ERROR=""
-    if [[ "$web_fallback" == /* ]]; then
-        if [[ ! -f "$web_fallback/index.html" ]]; then
-            WEB_ERROR="web_fallback 目录里必须有 index.html"
-            return 1
-        fi
-        WEB_PUBLIC_KIND=dir
-        return 0
-    fi
+    WEB_FALLBACK_DIR=""
     if [[ "$web_fallback" =~ ^https?:// ]]; then
         local rest=${web_fallback#*://}
         if [[ "$rest" == *@* || "$rest" == *\?* || "$rest" == *#* || "$rest" == */* ]]; then
@@ -121,8 +122,13 @@ web_classify_fallback() {
         WEB_HTTP_RELAY=1
         return 0
     fi
-    WEB_ERROR="web_fallback 必须是 / 开头的目录，或 http(s)://主机[:端口]"
-    return 1
+    WEB_FALLBACK_DIR=$(web_fallback_dir)
+    if [[ ! -f "$WEB_FALLBACK_DIR/index.html" ]]; then
+        WEB_ERROR="web_fallback 目录里必须有 index.html: $WEB_FALLBACK_DIR"
+        return 1
+    fi
+    WEB_PUBLIC_KIND=dir
+    return 0
 }
 
 web_classify_upstream() {
@@ -251,7 +257,7 @@ web_write_tproxy_json() {
     local public_fields
     if [[ "$WEB_PUBLIC_KIND" == "dir" ]]; then
         public_fields=$(cat <<EOF
-  "public_dir": "$(json_escape "$web_fallback")",
+  "public_dir": "$(json_escape "$WEB_FALLBACK_DIR")",
   "static_routes": "$web_static_routes",
 EOF
 )
@@ -731,7 +737,7 @@ do_config_web() {
 
     while true; do
         print_subject "请输入伪装站"
-        echo "本地目录（须含 index.html），或 http://127.0.0.1:端口，或 http(s)://其它主机[:端口]。"
+        echo "本地目录可写相对路径（相对于脚本目录，须含 index.html），或绝对路径，或 http://127.0.0.1:端口，或 http(s)://其它主机[:端口]。"
         echo "后一种会由中转程序转发，tproxy 仍只连接本机回环。"
         read -r -p ":" input_fallback
         web_fallback=$input_fallback

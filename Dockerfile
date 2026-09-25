@@ -23,7 +23,7 @@ RUN set -ex \
 RUN set -ex \
     && apt-get update \
     && apt-get install -y --no-install-recommends git wget curl build-essential libssl-dev zlib1g-dev iproute2 vim-common net-tools procps python3 python3-cryptography unzip php-fpm \
-    && apt-get install -y --no-install-recommends ntpsec-ntpdate 2>/dev/null || apt-get install -y --no-install-recommends ntpdate 2>/dev/null || true \
+    && { apt-get install -y --no-install-recommends ntpsec-ntpdate || apt-get install -y --no-install-recommends ntpdate || true; } \
     && bash mtproxy.sh build \
     && sed -i 's/^user\s*=[^\r]\+/user = root/' /etc/php/*/fpm/pool.d/www.conf \
     && sed -i 's/^group\s*=[^\r]\+/group = root/' /etc/php/*/fpm/pool.d/www.conf \

@@ -1,0 +1,14 @@
+.git
+.github
+bin
+build
+pid
+log
+caddy
+config
+token.key
+tproxy.json
+profiles.json
+Caddyfile
+proxy-multi.conf
+proxy-secret
