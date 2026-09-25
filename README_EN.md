@@ -5,33 +5,29 @@
 
 # mtproxy
 
-A one-click installation automation script for MTProxy, designed for Telegram client connections. The script supports Fake TLS and AdTag configuration by default.
+A one-click installer for an MTProxy that Telegram clients can connect to. Fake TLS and an AdTag are supported by default.
 
-Additionally, it provides Nginx as a frontend proxy and MTProxy as a backend proxy to achieve secure traffic disguise. IP whitelist is configured at the Nginx forwarding layer, allowing only whitelisted IPs to access the service.
+It can also put Nginx in front of MTProxy so the traffic looks like a normal site. An IP whitelist on that front door allows only approved addresses through.
 
-> Docker images are provided for out-of-the-box usage.
+> A Docker image is provided for this setup.
 
 ## Community
 
-Telegram Group: <https://t.me/EllerHK>
+Telegram group: [https://t.me/EllerHK](https://t.me/EllerHK)
 
-## Installation Methods
+## Installation
 
-Two installation methods are available:
+Two ways:
 
-- **Script Installation** (Recommended for Debian/Ubuntu)
+- Script (Debian/Ubuntu is the better host)
+  This installs or builds on the machine and may pull in system packages.
 
-  This method requires direct installation or compilation on your host machine, which may require installing some basic system dependency libraries.
+- Docker (any system that runs Docker)
+  **Docker is the easier choice.** It does not install those packages on the host. Changing a config file takes a little Docker knowledge.
 
-- **Docker Installation** (Any system that supports Docker)
+### Script
 
-  **Beginners are recommended to use Docker!** It won't pollute your host system. If you need to modify configuration files, you'll need to learn some basic Docker usage.
-
-### Script Installation
-
-> If you repeatedly encounter errors or other unknown issues, it is recommended to switch to a Debian 9+ system or use Docker instead.
-
-Execute the following commands to install:
+> If the script keeps failing, use Debian 9 or newer, or switch to Docker.
 
 ```bash
 rm -rf /home/mtproxy && mkdir /home/mtproxy && cd /home/mtproxy
@@ -41,94 +37,123 @@ bash mtproxy.sh
 
  ![mtproxy.sh](https://raw.githubusercontent.com/ellermister/mtproxy/master/preview.jpg)
 
-### Docker | Whitelist MTProxy Docker Image
+### Docker
 
-This image integrates nginx and mtproxy+tls to disguise traffic, and uses **whitelist** mode to deal with firewall detection.
+Use either the image or the script, not both. The commands below are ready to copy. The full parameter list is in [docs/parameters.en.md](docs/parameters.en.md).
 
-**If you use this Docker image, you don't need to use the script anymore. Choose one of the two methods, don't mix them up.**
-
-**If Docker is not installed**, use the following one-click installation:
+**If Docker is not installed:**
 
 ```bash
 curl -fsSL https://get.docker.com -o get-docker.sh
 sh get-docker.sh
 ```
 
-**Create container with whitelist:**
-
- ```bash
-docker run -d \
---name mtproxy \
---restart=always \
--e domain="cloudflare.com" \
--p 8080:80 \
--p 8443:443 \
-ellermister/mtproxy
- ```
-
-**The image enables IP segment whitelist by default.**  
-If you don't need it, you can disable it by setting `ip_white_list="OFF"`:
+**Fake TLS with the default IP-segment whitelist (recommended)**
 
 ```bash
 docker run -d \
 --name mtproxy \
 --restart=always \
 -e domain="cloudflare.com" \
--e secret="548593a9c0688f4f7d9d57377897d964" \
--e ip_white_list="OFF" \
 -p 8080:80 \
 -p 8443:443 \
 ellermister/mtproxy
 ```
 
-`ip_white_list` options:
+Add `-e ip_white_list="OFF"` to disable the whitelist. Clients connect to the published port `8443`.
 
-- **OFF** - Disable whitelist
-- **IP** - Record a single IP after the registration URL is opened
-- **IPSEG** - Record an IP segment after the registration URL is opened
-- **AUTO** - Accept a valid FakeTLS handshake and record that IP
+**WEB proxy (experimental)**
 
-`secret`: If you want to create a known secret key, the format should be: 32 hexadecimal characters.
+The server can bind ports 80 and 443. Caddy inside the container requests a certificate and serves HTTPS. Point the domain at this machine first. `web_listen` stays on loopback; Caddy reaches it inside the container, so do not publish `18080`.
 
-**View link configuration parameters in logs:**
+```bash
+docker run -d \
+--name mtproxy \
+--restart=always \
+-e secret="548593a9c0688f4f7d9d57377897d964" \
+-e proxy_mode="web" \
+-e web_hostname="your-domain-replace.it" \
+-e web_email="you@example.com" \
+-e web_fallback="public" \
+-e web_front="caddy" \
+-e web_listen="127.0.0.1:8080" \
+-p 80:80 \
+-p 443:443 \
+ellermister/mtproxy
+```
+
+No permission for ports 80 and 443, or a web server is already in front. Reverse-proxy that site to `18080` on the host or on this container, and keep the original Host header.
+
+```bash
+docker run -d \
+--name mtproxy \
+--restart=always \
+-e secret="548593a9c0688f4f7d9d57377897d964" \
+-e proxy_mode="web" \
+-e web_hostname="your-domain-replace.it" \
+-e web_fallback="public" \
+-e web_front="external" \
+-e web_listen="0.0.0.0:18080" \
+-p 18080:18080 \
+ellermister/mtproxy
+```
+
+`web_fallback="public"` is a path relative to the script directory. In the image that is `/home/mtproxy/public`, which already contains `index.html`. You can instead use `https://host` with no trailing slash.
+
+**Read the link from the logs:**
 
 ```bash
 docker logs -f mtproxy
 ```
 
-Remember to change the connection port to your mapped external port. In the examples above, the port is `8443`. Modify the port when connecting.
+**Common parameters**
 
-For more usage, please refer to: <https://hub.docker.com/r/ellermister/mtproxy>
+`provider`:
+
+- **1** Official MTProxy. Poor compatibility, and it only connects through Telegram's middle servers. Skip it when you do not need an adtag
+- **2** mtg, the Go build. More architectures, and it supports an adtag. This is the WEB default
+- **3** mtprotoproxy, the Python build. More architectures, and it supports an adtag
+
+`ip_white_list` applies only to Fake TLS:
+
+- **OFF** disables the whitelist
+- **IP** records the visitor of the registration URL
+- **IPSEG** records the IPv4 /24. This is the default
+- **AUTO** accepts a valid FakeTLS handshake and records that IP
+
+`secret` is 32 hexadecimal characters. Leave it empty and the container generates one; read it from the logs.
+
+Everything else, including camouflage sites and reverse-proxy notes, is in [docs/parameters.en.md](docs/parameters.en.md).
 
 ## Usage
 
-Configuration file is `config`. If you want to manually modify the secret or parameters, please pay attention to the format.
+Settings live in `config`. Keep the assignment format if you edit it by hand.
 
-Start service
+Start
 
 ```bash
 bash mtproxy.sh start
 ```
 
-Debug mode
+Debug
 
 ```bash
 bash mtproxy.sh debug
 ```
 
-Stop service
+Stop
 
 ```bash
 bash mtproxy.sh stop
 ```
 
-Restart service
+Restart
 
 ```bash
 bash mtproxy.sh restart
 ```
 
-Reinstall/Reconfigure
+Reinstall or reconfigure
 
 ```bash
 bash mtproxy.sh reinstall
@@ -136,31 +161,25 @@ bash mtproxy.sh reinstall
 
 ## Uninstall
 
-Since it's a portable version, uninstallation is extremely simple - just delete the directory.
+Delete the directory.
 
 ```bash
 rm -rf /home/mtproxy
 ```
 
-## Run on Startup
+## Start on boot
 
-> This script is not configured as a system service. You can add it to your startup script.
+> The script is not installed as a system service. Add it to your boot script.
 
-For the startup script, if your `rc.local` file doesn't exist, please check your startup service.
-
-Edit the file `/etc/rc.local` and add the following code to the startup script:
+If `/etc/rc.local` is missing, check how this system runs boot scripts. Add:
 
 ```bash
 cd /home/mtproxy && bash mtproxy.sh start > /dev/null 2>&1 &
 ```
 
-## Crontab Daemon
+## Crontab
 
-Due to bugs in the official mtproxy program, there are issues with process handling when the PID exceeds 65535, causing the process to become unresponsive and exit abnormally.
-
-Therefore, it is recommended to monitor the process through scheduled tasks `crontab -e`:
-
-Check and start the process every minute
+The official mtproxy binary mishandles a PID above 65535 and can exit. A crontab entry keeps it up. Run `crontab -e` and add:
 
 ```bash
 * * * * * cd /home/mtproxy && bash mtproxy.sh start > /dev/null 2>&1 &
@@ -168,14 +187,16 @@ Check and start the process every minute
 
 ## MTProxy Admin Bot
 
-<https://t.me/MTProxybot>
+[https://t.me/MTProxybot](https://t.me/MTProxybot)
+
 > Sorry, an error has occurred during your request. Please try again later.(Code xxxxxx)
 
-If you encounter such an error when applying to bind proxy promotion, the official has not given a clear reason. According to user feedback, such problems mostly occur with accounts registered for less than 2-3 years.  
-**It is recommended to use accounts that are more than 3 years old and accounts that have not been banned.**
+Telegram does not document this error. Reports usually come from accounts younger than two or three years.  
+**Use an account older than three years that has not been banned.**
 
 ## References
 
-- <https://github.com/TelegramMessenger/MTProxy>
-- <https://github.com/9seconds/mtg>
-- <https://github.com/alexbers/mtprotoproxy>
+- [https://github.com/TelegramMessenger/MTProxy](https://github.com/TelegramMessenger/MTProxy)
+- [https://github.com/9seconds/mtg](https://github.com/9seconds/mtg)
+- [https://github.com/alexbers/mtprotoproxy](https://github.com/alexbers/mtprotoproxy)
+- [https://github.com/telegramdesktop/tproxy-server](https://github.com/telegramdesktop/tproxy-server)
