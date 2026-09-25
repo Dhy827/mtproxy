@@ -85,8 +85,9 @@ ellermister/mtproxy
 `ip_white_list` 选项:
 
 - **OFF** 关闭白名单
-- **IP** 开启 IP 白名单
-- **IPSEG** 开启 IP 段白名单
+- **IP** 开启 IP 白名单，访问登记地址后写入
+- **IPSEG** 开启 IP 段白名单，访问登记地址后写入
+- **AUTO** 认出 FakeTLS 就放行，并记下该 IP
 
 `secret`指定密钥：如果你想创建已知的密钥，格式为：32位十六进制字符。
 

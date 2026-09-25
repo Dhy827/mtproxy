@@ -1,9 +1,9 @@
 #!/bin/bash
 
-TPROXY_JSON_PATH=$WORKDIR/tproxy.json
-PROFILES_JSON_PATH=$WORKDIR/profiles.json
-CADDYFILE_PATH=$WORKDIR/Caddyfile
-LOG_DIR=$WORKDIR/log
+TPROXY_JSON_PATH=$RUNTIME_DIR/tproxy.json
+PROFILES_JSON_PATH=$RUNTIME_DIR/profiles.json
+CADDYFILE_PATH=$RUNTIME_DIR/Caddyfile
+LOG_DIR=$RUNTIME_DIR/log
 BINARY_TPROXY_SERVER_PATH=$WORKDIR/bin/tproxy-server
 BINARY_TPROXY_RELAY_PATH=$WORKDIR/bin/tproxy-relay
 BINARY_CADDY_PATH=$WORKDIR/bin/caddy
@@ -215,7 +215,7 @@ web_validate_config() {
     if [[ "$web_token_key" == /* ]]; then
         WEB_TOKEN_PATH=$web_token_key
     else
-        WEB_TOKEN_PATH=$WORKDIR/$web_token_key
+        WEB_TOKEN_PATH=$RUNTIME_DIR/$web_token_key
     fi
 }
 
@@ -330,7 +330,8 @@ web_write_python_config() {
         secure=True
     fi
     split_host_port "$web_backend"
-    cat > "$WORKDIR/bin/config.py" <<EOF
+    mkdir -p "$RUNTIME_DIR"
+    cat > "$RUNTIME_DIR/config.py" <<EOF
 PORT = ${SPLIT_PORT}
 LISTEN_ADDR_IPV4 = "${SPLIT_HOST}"
 LISTEN_ADDR_IPV6 = ""
@@ -362,15 +363,16 @@ web_prepare_mtp_command() {
     elif [[ "$provider_name" == "python-mtprotoproxy" ]]; then
         [[ -f "$BINARY_PY_MTPROTOPROXY_PATH" ]] || print_error_exit "缺少 mtprotoproxy，请先安装"
         web_write_python_config
-        CMD_mtp=("$SYSTEM_PYTHON" "$BINARY_PY_MTPROTOPROXY_PATH" "$WORKDIR/bin/config.py")
+        CMD_mtp=("$SYSTEM_PYTHON" "$BINARY_PY_MTPROTOPROXY_PATH" "$RUNTIME_DIR/config.py")
     elif [[ "$provider_name" == "official-MTProxy" ]]; then
         [[ -x "$BINARY_MTPROTO_PROXY_PATH" ]] || print_error_exit "缺少官方 MTProxy，请先安装"
-        curl -fsSL --connect-timeout 10 --max-time 30 https://core.telegram.org/getProxyConfig -o "$WORKDIR/proxy-multi.conf" || print_error_exit "下载 proxy-multi.conf 失败"
-        curl -fsSL --connect-timeout 10 --max-time 30 https://core.telegram.org/getProxySecret -o "$WORKDIR/proxy-secret" || print_error_exit "下载 proxy-secret 失败"
+        mkdir -p "$RUNTIME_DIR"
+        curl -fsSL --connect-timeout 10 --max-time 30 https://core.telegram.org/getProxyConfig -o "$RUNTIME_DIR/proxy-multi.conf" || print_error_exit "下载 proxy-multi.conf 失败"
+        curl -fsSL --connect-timeout 10 --max-time 30 https://core.telegram.org/getProxySecret -o "$RUNTIME_DIR/proxy-secret" || print_error_exit "下载 proxy-secret 失败"
         local workers
         workers=$(get_cpu_core)
         split_host_port "$web_backend"
-        CMD_mtp=("$BINARY_MTPROTO_PROXY_PATH" -u nobody -p "$statport" -H "$SPLIT_PORT" -S "$secret" --aes-pwd "$WORKDIR/proxy-secret" "$WORKDIR/proxy-multi.conf" -M "$workers")
+        CMD_mtp=("$BINARY_MTPROTO_PROXY_PATH" -u nobody -p "$statport" -H "$SPLIT_PORT" -S "$secret" --aes-pwd "$RUNTIME_DIR/proxy-secret" "$RUNTIME_DIR/proxy-multi.conf" -M "$workers")
         if [[ -n "$adtag" ]]; then
             CMD_mtp+=(-P "$adtag")
         fi
@@ -457,6 +459,13 @@ do_install_web_bins() {
         chmod +x "$BINARY_CADDY_PATH"
         rm -rf "$tmp"
     fi
+    if [[ -f "$WORKDIR/front/main.go" ]]; then
+        if [[ ! -x "$WORKDIR/bin/front" ]] || [[ -n $(find "$WORKDIR/front" -name '*.go' -newer "$WORKDIR/bin/front" -print -quit 2>/dev/null) ]]; then
+            print_info "编译 front"
+            (cd "$WORKDIR/front" && CGO_ENABLED=0 go build -trimpath -o "$WORKDIR/bin/front" .) || print_error_exit "编译 front 失败"
+            chmod +x "$WORKDIR/bin/front"
+        fi
+    fi
     rm -rf "$WORKDIR/build/go" "$WORKDIR/build/go.tgz"
 }
 
@@ -474,14 +483,14 @@ web_prepare() {
     # shellcheck disable=SC1090
     source "$CONFIG_PATH"
     web_validate_config
-    mkdir -p "$LOG_DIR" "$WORKDIR/pid" "$(dirname "$WEB_TOKEN_PATH")"
+    mkdir -p "$LOG_DIR" "$RUNTIME_DIR/pid" "$(dirname "$WEB_TOKEN_PATH")"
     web_require_bins
     web_ensure_token
     web_write_profiles
     web_write_tproxy_json
     if [[ "$web_front" == "caddy" ]]; then
         web_write_caddyfile
-        mkdir -p "$WORKDIR/caddy"
+        mkdir -p "$RUNTIME_DIR/caddy"
     fi
     "$BINARY_TPROXY_SERVER_PATH" -config "$TPROXY_JSON_PATH" -check || print_error_exit "tproxy 配置校验失败"
     web_prepare_commands
@@ -490,7 +499,7 @@ web_prepare() {
 web_spawn() {
     local name=$1
     shift
-    mkdir -p "$LOG_DIR" "$WORKDIR/pid"
+    mkdir -p "$LOG_DIR" "$RUNTIME_DIR/pid"
     {
         printf '\n==== %s start %s ====\n' "$(date '+%F %T')" "$name"
         printf 'command:'
@@ -500,14 +509,14 @@ web_spawn() {
     "$@" >>"$LOG_DIR/$name.log" 2>&1 &
     local pid=$!
     disown "$pid" 2>/dev/null || true
-    echo "$pid" > "$WORKDIR/pid/child-$name.pid"
+    echo "$pid" > "$RUNTIME_DIR/pid/child-$name.pid"
 }
 
 web_ensure() {
     local restart=$1
     local name=$2
     shift 2
-    local pidfile="$WORKDIR/pid/child-$name.pid"
+    local pidfile="$RUNTIME_DIR/pid/child-$name.pid"
     local pid=""
     if [[ -f "$pidfile" ]]; then
         pid=$(cat "$pidfile" 2>/dev/null || true)
@@ -542,7 +551,7 @@ web_watch_children() {
 web_kill_recorded_children() {
     local file pid
     local found=0
-    for file in "$WORKDIR"/pid/child-*.pid; do
+    for file in "$RUNTIME_DIR"/pid/child-*.pid; do
         [[ -e "$file" ]] || continue
         found=1
         pid=$(cat "$file" 2>/dev/null || true)
@@ -552,7 +561,7 @@ web_kill_recorded_children() {
     done
     [[ "$found" == 1 ]] || return 0
     sleep 1
-    for file in "$WORKDIR"/pid/child-*.pid; do
+    for file in "$RUNTIME_DIR"/pid/child-*.pid; do
         [[ -e "$file" ]] || continue
         pid=$(cat "$file" 2>/dev/null || true)
         if [[ -n "$pid" ]]; then
@@ -576,8 +585,8 @@ web_supervise() {
     web_kill_recorded_children
     web_prepare
     echo $$ > "$PID_FILE"
-    export XDG_DATA_HOME=$WORKDIR/caddy
-    export XDG_CONFIG_HOME=$WORKDIR/caddy
+    export XDG_DATA_HOME=$RUNTIME_DIR/caddy
+    export XDG_CONFIG_HOME=$RUNTIME_DIR/caddy
     set -m
     trap web_shutdown INT TERM
     web_watch_children 0
@@ -597,7 +606,7 @@ web_report_startup() {
         fi
     fi
     for name in mtp tproxy relay-tcp relay-http caddy; do
-        pidfile="$WORKDIR/pid/child-$name.pid"
+        pidfile="$RUNTIME_DIR/pid/child-$name.pid"
         [[ -f "$pidfile" ]] || continue
         pid=$(cat "$pidfile" 2>/dev/null || true)
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -635,7 +644,7 @@ info_web() {
             echo "Cloudflare 必须设置：proxy_set_header X-Forwarded-For \$http_cf_connecting_ip;"
             echo "这个值只能有一个 IP。建议关闭 /?bridge= 缓存、Rocket Loader、Auto Minify、Email Obfuscation、Bot Fight Mode、I'm Under Attack 和托管质询。"
         else
-            echo "Caddy 反代到 ${WEB_JSON_LISTEN}，证书目录在 caddy/"
+            echo "Caddy 反代到 ${WEB_JSON_LISTEN}，证书目录在 runtime/caddy/"
         fi
         echo "日志目录: $LOG_DIR"
         echo "停止服务会一起结束 MTProxy、tproxy、中转和 Caddy。"

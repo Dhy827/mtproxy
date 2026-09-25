@@ -1,6 +1,7 @@
 #!/bin/bash
 WORKDIR=$(dirname $(readlink -f $0))
 cd $WORKDIR
+RUNTIME_DIR=$WORKDIR/runtime
 if [[ -f "$WORKDIR/web.sh" ]]; then
     # shellcheck disable=SC1091
     source "$WORKDIR/web.sh"
@@ -13,7 +14,7 @@ SYSTEM_PYTHON=$(which python3 || which python)
 
 IS_DOCKER=$( [ -f /.dockerenv ] && echo "true" || echo "false" )
 
-PID_FILE=$WORKDIR/pid/pid_mtproxy
+PID_FILE=$RUNTIME_DIR/pid/pid_mtproxy
 CONFIG_PATH=$WORKDIR/config
 
 URL_MTG="https://github.com/ellermister/mtproxy/releases/download/v0.04/$(uname -m)-mtg"
@@ -24,6 +25,31 @@ BINARY_MTPROTO_PROXY_PATH=$WORKDIR/bin/mtproto-proxy
 BINARY_PY_MTPROTOPROXY_PATH=$WORKDIR/bin/mtprotoproxy.py
 
 PUBLIC_IP=""
+
+relocate_runtime_dir() {
+    local name=$1
+    if [[ -d "$WORKDIR/$name" ]]; then
+        mkdir -p "$RUNTIME_DIR/$name"
+        if [[ -z "$(ls -A "$RUNTIME_DIR/$name" 2>/dev/null)" ]]; then
+            rm -rf "$RUNTIME_DIR/$name"
+            mv "$WORKDIR/$name" "$RUNTIME_DIR/$name"
+        fi
+    fi
+    mkdir -p "$RUNTIME_DIR/$name"
+}
+
+relocate_runtime_files() {
+    mkdir -p "$RUNTIME_DIR"
+    local name
+    for name in token.key tproxy.json profiles.json Caddyfile proxy-multi.conf proxy-secret ip_white.conf; do
+        if [[ ! -e "$RUNTIME_DIR/$name" && -f "$WORKDIR/$name" ]]; then
+            mv "$WORKDIR/$name" "$RUNTIME_DIR/$name"
+        fi
+    done
+    relocate_runtime_dir caddy
+    relocate_runtime_dir log
+    relocate_runtime_dir pid
+}
 
 
 check_sys() {
@@ -691,7 +717,8 @@ function get_run_command(){
       [[ -f "$BINARY_MTG_PATH" ]] || (print_warning "MTProxy 代理程序不存在请重新安装!" && exit 1)
       echo "$BINARY_MTG_PATH run $client_secret $adtag -b 0.0.0.0:$port --multiplex-per-connection 500 --prefer-ip=ipv4 -t $local_ip:$statport" -4 "$PUBLIC_IP:$port"
   elif [[ "$mtg_provider" == "python-mtprotoproxy" ]]; then
-        cat >$WORKDIR/bin/config.py <<EOF
+        mkdir -p "$RUNTIME_DIR"
+        cat >"$RUNTIME_DIR/config.py" <<EOF
 PORT = ${port}
 USERS = {
     "tg":  "${secret}",
@@ -707,15 +734,16 @@ EOF
       #optimze pool
       sed -i 's/MAX_CONNS_IN_POOL =\s[0-9]\+/MAX_CONNS_IN_POOL = 500/' "$BINARY_PY_MTPROTOPROXY_PATH"
       
-      echo "$SYSTEM_PYTHON $BINARY_PY_MTPROTOPROXY_PATH $WORKDIR/bin/config.py"
+      echo "$SYSTEM_PYTHON $BINARY_PY_MTPROTOPROXY_PATH $RUNTIME_DIR/config.py"
   elif [[ "$mtg_provider" == "official-MTProxy" ]]; then
-      curl -s https://core.telegram.org/getProxyConfig -o proxy-multi.conf
-      curl -s https://core.telegram.org/getProxySecret -o proxy-secret
+      mkdir -p "$RUNTIME_DIR"
+      curl -s https://core.telegram.org/getProxyConfig -o "$RUNTIME_DIR/proxy-multi.conf"
+      curl -s https://core.telegram.org/getProxySecret -o "$RUNTIME_DIR/proxy-secret"
       nat_info=$(get_nat_ip_param)
       workerman=$(get_cpu_core)
       tag_arg=""
       [[ -n "$adtag" ]] && tag_arg="-P $adtag"
-      echo "$BINARY_MTPROTO_PROXY_PATH -u nobody -p $statport -H $port -S $secret --aes-pwd proxy-secret proxy-multi.conf -M $workerman $tag_arg --domain $domain $nat_info --ipv6"
+      echo "$BINARY_MTPROTO_PROXY_PATH -u nobody -p $statport -H $port -S $secret --aes-pwd $RUNTIME_DIR/proxy-secret $RUNTIME_DIR/proxy-multi.conf -M $workerman $tag_arg --domain $domain $nat_info --ipv6"
   else
       print_warning "Invalid configuration, please reinstall"
       exit 1
@@ -868,6 +896,11 @@ reinstall_mtp() {
 }
 
 param=$1
+
+relocate_runtime_files
+if [[ "${1:-}" == "relocate" ]]; then
+    exit 0
+fi
 
 if [ -z "$PUBLIC_IP" ] && [[ "check_tg" != "$param" ]] && [[ "tgcheck" != "$param" ]] && [[ "check-tg" != "$param" ]]; then
     PUBLIC_IP=$(get_ip_public) || print_error_exit "Failed to get public IP address. Please check your network connection."

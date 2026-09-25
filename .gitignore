@@ -11,3 +11,4 @@ token.key
 Caddyfile
 log/
 caddy/
+runtime/

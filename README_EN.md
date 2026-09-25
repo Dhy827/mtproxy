@@ -84,8 +84,9 @@ ellermister/mtproxy
 `ip_white_list` options:
 
 - **OFF** - Disable whitelist
-- **IP** - Enable IP whitelist
-- **IPSEG** - Enable IP segment whitelist
+- **IP** - Record a single IP after the registration URL is opened
+- **IPSEG** - Record an IP segment after the registration URL is opened
+- **AUTO** - Accept a valid FakeTLS handshake and record that IP
 
 `secret`: If you want to create a known secret key, the format should be: 32 hexadecimal characters.
 

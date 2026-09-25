@@ -124,10 +124,8 @@ if [[ ! -f $config_path ]]; then
     if [[ -z "${ip_white_list:-}" ]]; then
         ip_white_list='IPSEG'
     fi
-    if [[ "$ip_white_list" == "OFF" ]]; then
-        echo "0.0.0.0/0 1;" >> /etc/nginx/ip_white.conf
-    fi
-    echo "$ip_white_list" > /var/ip_white_list
+    mkdir -p /home/mtproxy/runtime
+    echo "$ip_white_list" > /home/mtproxy/runtime/ip_white_mode
 fi
 
 set_config
@@ -139,9 +137,43 @@ if [[ "${1:-}" == "prepare" ]]; then
     exit 0
 fi
 
-/usr/sbin/php-fpm* -R
-chmod 777 /etc/nginx/ip_white.conf
-chmod 777 /run/php/php-fpm.sock
+bash /home/mtproxy/mtproxy.sh relocate
+mkdir -p /home/mtproxy/runtime
+if [[ ! -f /home/mtproxy/runtime/ip_white_mode && -f /var/ip_white_list ]]; then
+    cp /var/ip_white_list /home/mtproxy/runtime/ip_white_mode
+fi
+if [[ ! -f /home/mtproxy/runtime/ip_white_mode ]]; then
+    echo "${ip_white_list:-IPSEG}" > /home/mtproxy/runtime/ip_white_mode
+fi
+
+whitelist_mode=$(tr -d '[:space:]' < /home/mtproxy/runtime/ip_white_mode)
+https_fallback=${https_fallback:-local}
+whitelist_path=${whitelist_path:-/add.php}
+mtp_port=$(sed -n 's/^port=\([0-9][0-9]*\)$/\1/p' "$config_path" | head -n 1)
+mtp_port=${mtp_port:-8443}
+front_domain=$(sed -n 's/^domain="\([^"]*\)"$/\1/p' "$config_path" | head -n 1)
+front_secret=$(sed -n 's/^secret="\([^"]*\)"$/\1/p' "$config_path" | head -n 1)
+
+/home/mtproxy/bin/front -init-cert -cert /home/mtproxy/runtime/fallback.crt -key /home/mtproxy/runtime/fallback.key
+
+(
+    while true; do
+        /home/mtproxy/bin/front \
+            -http :80 \
+            -https :443 \
+            -mtp "127.0.0.1:${mtp_port}" \
+            -nginx-http 127.0.0.1:8080 \
+            -nginx-tls 127.0.0.1:8444 \
+            -fallback "$https_fallback" \
+            -domain "$front_domain" \
+            -whitelist /home/mtproxy/runtime/ip_white.conf \
+            -whitelist-mode "$whitelist_mode" \
+            -whitelist-path "$whitelist_path" \
+            -secret "$front_secret" || echo "入口退出，两秒后重启" >&2
+        sleep 2
+    done
+) &
+
 cd /home/mtproxy
 {
     bash /home/mtproxy/mtproxy.sh daemon
