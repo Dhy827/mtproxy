@@ -1,6 +1,67 @@
 #!/bin/bash
 WORKDIR=$(dirname $(readlink -f $0))
 cd $WORKDIR
+
+fetch_project_if_alone() {
+    [[ -n "${MTPROXY_BOOTSTRAPPED:-}" ]] && return 0
+    [[ -f "$0" ]] || return 0
+    local script dir base path others
+    script=$(readlink -f "$0") || return 0
+    dir=$(dirname "$script")
+    base=$(basename "$script")
+    shopt -s nullglob dotglob
+    others=0
+    for path in "$dir"/*; do
+        [[ "$(basename "$path")" == "$base" ]] && continue
+        others=1
+        break
+    done
+    shopt -u nullglob dotglob
+    [[ "$others" -eq 0 ]] || return 0
+
+    local url="https://github.com/ellermister/mtproxy/archive/refs/heads/master.zip"
+    local tmp extracted
+    tmp=$(mktemp -d)
+    echo "目录里只有 ${base}，正在下载完整文件..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url" -o "$tmp/src.zip" || { rm -rf "$tmp"; echo "下载失败: $url"; exit 1; }
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "$url" -O "$tmp/src.zip" || { rm -rf "$tmp"; echo "下载失败: $url"; exit 1; }
+    else
+        rm -rf "$tmp"
+        echo "需要 curl 或 wget 才能下载完整文件"
+        exit 1
+    fi
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -q "$tmp/src.zip" -d "$tmp" || { rm -rf "$tmp"; echo "解压失败"; exit 1; }
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$tmp/src.zip" "$tmp" || { rm -rf "$tmp"; echo "解压失败"; exit 1; }
+    else
+        rm -rf "$tmp"
+        echo "需要 unzip 或 python3 才能解压完整文件"
+        exit 1
+    fi
+    extracted=""
+    shopt -s nullglob
+    for path in "$tmp"/*; do
+        if [[ -f "$path/mtproxy.sh" && -f "$path/web.sh" ]]; then
+            extracted=$path
+            break
+        fi
+    done
+    shopt -u nullglob
+    if [[ -z "$extracted" ]]; then
+        rm -rf "$tmp"
+        echo "压缩包里没有完整项目文件"
+        exit 1
+    fi
+    cp -a "$extracted"/. "$dir"/ || { rm -rf "$tmp"; echo "复制文件失败"; exit 1; }
+    rm -rf "$tmp"
+    export MTPROXY_BOOTSTRAPPED=1
+    exec bash "$dir/mtproxy.sh" "$@"
+}
+
+fetch_project_if_alone "$@"
 RUNTIME_DIR=$WORKDIR/runtime
 if [[ -f "$WORKDIR/web.sh" ]]; then
     # shellcheck disable=SC1091
